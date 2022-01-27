@@ -24,16 +24,14 @@ import "@openzeppelin/contracts/access/Ownable.sol";
  */
 contract Market is ERC1155Holder, Ownable {
 
-    // TODO: add royalties, add pendingWithdrawals for payout
-
     // ERC1155 contract
     IERC1155 public immutable tokenContract;
 
-    mapping (uint256 => Offer) public offers;
-    // mapping (address => Offer) public offerByOwner;
+    // Address for fee
+    address payable buildship = payable(0x704C043CeB93bD6cBE570C6A2708c3E1C0310587);
 
-    // mapping (uint256 => mapping (address => Offer) userOffers;
-    // mapping (address => Offer) pendingOffers;
+    mapping (uint256 => Offer[]) public offers;
+
 
     struct Offer {
         uint256 price;
@@ -56,65 +54,104 @@ contract Market is ERC1155Holder, Ownable {
         require(_tokenContract.supportsInterface(type(IERC1155).interfaceId), "Token is not supported");
         tokenContract = _tokenContract;
     }
+    
+    //add offer to the list
+    function addItemToList(uint256 tokenId, uint256 amount, uint256 price) public {
+        require(tokenContract.balanceOf(msg.sender, tokenId) >= amount, "Not enough tokens");
+        require(tokenContract.isApprovedForAll(msg.sender, address(this)), "Cant list for sale if not approved for all");
+        
+        bool offerExists = false;
+        uint256 unusedOffer = 2^256 - 1;
+        for (uint256 i = 0; i < offers[tokenId].length; i++) {
+            if (offers[tokenId][i].owner == msg.sender && offers[tokenId][i].amount > 0) {
+                offerExists = true;
+            }
 
-    // list for sale, receives tokenId, amount of tokens, price
-    function list(uint256 tokenId, uint256 amount, uint256 price) public {
-        // transfer token from user
+            if (offers[tokenId][i].amount == 0) {
+                unusedOffer = i;
+                if (offerExists) break;
+            }
+        }
+
+        require(offerExists == false, 'Offer Already Exists! Please choose function updateItemFromList');
+
+        Offer memory offer = Offer(price, amount, payable(msg.sender));
+        
+        if (unusedOffer == 2^256 - 1) {
+            offers[tokenId].push(offer);
+        } else {
+            offers[tokenId][unusedOffer] = offer;
+        }  
+    }
+
+    // update offer from the list
+    function updateOfferFromList(uint256 tokenId, uint256 amount, uint256 price) public {
         require(tokenContract.balanceOf(msg.sender, tokenId) >= amount, "Not enough tokens");
         require(tokenContract.isApprovedForAll(msg.sender, address(this)), "Cant list for sale if not approved for all");
 
-        // NO transfer, insteaf we just approve
-        // tokenContract.safeTransferFrom(msg.sender, address(this), tokenId, amount, "");
-
-        // create selling offer
-        Offer memory offer = Offer(price, amount, payable(msg.sender));
-        offers[tokenId] = offer;
-    }
- 
-    function unlist(uint256 tokenId, uint256 amount) public {
-        Offer storage offer = offers[tokenId];
-
-        require(offer.owner == msg.sender, "Only owner can unlist");
-
-        // tokenContract.safeTransferFrom(address(this), msg.sender, tokenId, amount, "");
-
-        offer.amount -= amount;
-
-        // if no more tokens, remove offer
-        if (offer.amount == 0) {
-            delete offers[tokenId];
+        uint256 offerId = 2^256 - 1;
+        for (uint256 i = 0; i < offers[tokenId].length; i++) {
+            if (offers[tokenId][i].owner == msg.sender && offers[tokenId][i].amount > 0) {
+                offerId = i;
+                break;
+            }
         }
+
+        require(offerId != 2^256 - 1, "You haven't offer with this tokenId");
+
+        Offer memory offer = Offer(price, amount, payable(msg.sender));
+        offers[tokenId][offerId] = offer;
     }
 
-    function buy(uint256 tokenId, uint256 amount) payable public {
-        // find offer
-        Offer storage offer = offers[tokenId];
-        require(offer.amount >= amount, "Not enough tokens");
+    // delete offer from the list
+    function deleteOfferFromList(uint256 tokenId) public {
+        uint256 offerId = 2^256 - 1;
+        for (uint256 i = 0; i < offers[tokenId].length; i++) {
+            if (offers[tokenId][i].owner == msg.sender && offers[tokenId][i].amount > 0) {
+                offerId = i;
+                break;
+            }
+        }
 
-        // check user passed enough ETH
+        require(offerId != 2^256 - 1, "You haven't offer with this tokenId");
+        offers[tokenId][offerId].amount = 0;
+    }
+
+    function buy(uint256 tokenId, uint256 offerId, uint256 amount) payable public {
+        Offer storage offer = offers[tokenId][offerId];
+
+        require(amount >= 0, "Amount should be more than 0");
+        require(offer.amount >= amount, "Not enough tokens");
         require(msg.value >= offer.price * amount, "Not enough ETH");
 
+        // CHECK APPROVE
         if(!tokenContract.isApprovedForAll(offer.owner, address(this))) {
-            delete offers[tokenId];
+            offer.amount = 0;
             require(false, "Cant buy, offer is not valid");
         }
 
-        // transfer tokens to user
+        // CHECK IF AMOUNT OF OFFER LESS THAN AMOUNT OF SELLER
+        if (tokenContract.balanceOf(offer.owner, tokenId) < offer.amount) {
+            offer.amount = 0;
+            require(false, "Offer have been deleted, amount of offer less than amount of seller");
+        }
+
+        // Transfer tokens to user
         offer.amount -= amount;
         tokenContract.safeTransferFrom(offer.owner, msg.sender, tokenId, amount, "");
 
-        // payout to buyer
-        // TODO: hack, change to pendingWithdrawals
+        uint256 fee = offer.price * amount * 7 / 100;
         uint256 rest = msg.value - offer.price * amount;
-        // TODO: take fee?
 
-        offer.owner.transfer(offer.price * amount);
+        // Transfer Fee
+        (bool success,) = buildship.call{value: fee}("");
+        require(success);
+        
+        // Transfer to seller
+        offer.owner.transfer(offer.price * amount - fee);
+
+        // Transfer Rest
         payable(msg.sender).transfer(rest);
-
-        // if no more tokens, remove offer
-        if (offer.amount == 0) {
-            delete offers[tokenId];
-        }
     }
 
 }
