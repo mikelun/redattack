@@ -65,11 +65,11 @@ contract Market is ERC1155Holder, Ownable {
         for (uint256 i = 0; i < offers[tokenId].length; i++) {
             if (offers[tokenId][i].owner == msg.sender && offers[tokenId][i].amount > 0) {
                 offerExists = true;
+                break;
             }
 
             if (offers[tokenId][i].amount == 0) {
                 unusedOffer = i;
-                if (offerExists) break;
             }
         }
 
